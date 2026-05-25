@@ -27,3 +27,7 @@ To understand how an emitter delivers acoustic energy to a listener window, we n
 If the path to the listener window's center is unoccluded, the algorithm assumes that the direct paths to the other 26 cells in the listener window are also unoccluded and computes the acoustic energy delivered into those cells as such. This is done to avoid casting a separate primary ray for each. Under rare circumstances, this can create a scenario where the player can walk into a cell that, if they had been standing there already, would have triggered the occluded primary ray audio path, but because the cell they were standing in prior to entering this one was unoccluded, instead produced cell values as if this cell's direct path from the emitter was not occluded. The trade-off of accepting this slightly incorrect audio synthesis is certainly worth the computation shaved off by avoiding 27 separate DDAs per emission.
 
 The ray carries two payloads: per-band energy, a 3-tuple (low, mid, high) of scalar energy values, one per frequency band, and wave-state metadata including the delay (path length divided by the speed of sound), per-band attenuation, per-band coherence, and the ray's direction.
+
+<video src="/videos/emitter-secondary-ray.mp4" controls preload="metadata" playsinline width="100%"></video>
+
+<video src="/videos/emitter-multi-secondary-ray.mp4" controls preload="metadata" playsinline width="100%"></video>
