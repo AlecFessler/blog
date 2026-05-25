@@ -1,0 +1,32 @@
+---
+title: 'EngineV audio: bouncing sound around a voxel world'
+description: 'How acoustic energy is emitted, propagated, and synthesized in EngineV — the audio system for a voxel engine where sound is a puzzle mechanic.'
+pubDate: '2026-05-24'
+---
+
+> **Work in progress.** I'm publishing this post incrementally and adding sections as I write them. The structure below is intentional; the gaps are too.
+
+I am working on a yet-to-be-named escape-room puzzle game that uses lighting and audio effects as the basis of the puzzle mechanics. The game requires a custom engine, EngineV, a voxel engine with a physically-based ray-marched renderer that bounces light rays around the voxel grid to render the scene with reflections, transmission, global illumination, etc. All the bells and whistles.
+
+At some point during my work on the renderer, I thought, "Why not bounce sound around the room?" This motivated me to design an audio system that interacts with a room's geometry and the acoustic properties of the materials it's made from to synthesize physically-plausible audio effects such as reverb, echo, diffraction, and transmission. The following blog post digs into the implementation details of this audio system.
+
+## If a tree falls in the forest, and nobody is around to hear it, does it still make a sound? Not in EngineV.
+
+The EngineV audio system starts with three core abstractions: *cells*, *listener windows*, and *emitters*. A cell represents a 4x4x4 voxel volume that caches per-emitter acoustic energy local to the space, with each emitter slot divided into 64 8ms time bins. The bin index encodes effects such as echo and early reverb. Bin 0 is the acoustic energy consumed by the next tick, and bin 63 is consumed 504ms from now. Each tick of the audio system rotates the ring forward by one bin. A listener, such as the player character, is surrounded by a listener window, a 3x3x3 cell (one cell = 4x4x4 voxels) buffer centered at the listener that caches sounds that the player can reach in space and time under the engine's speed limits for player movement and sound propagation. An emitter is the source of acoustic energy that is eventually delivered to a listener window.
+
+If the listener never moved, the window would only need to be one cell, the one they're in. The 26 neighboring cells are for motion lookahead. The listener crosses at most one cell boundary per tick, so most cells are never heard. But without this insurance policy, the listener would hear the audio briefly drop out when crossing a cell boundary. When the listener crosses a boundary, that new cell becomes the center, translating the entire window by one cell in that direction. Cells that overlap between the old and new windows retain their state, cells freshly entering the window (the leading edge) are initialized to zero, and cells leaving the window (the trailing edge) are dropped.
+
+The leading-edge cells, the ones that have just entered the window due to listener movement, contain no acoustic energy in any of their time bins since they weren't in the window when past emissions were deposited. Had the listener been closer to the cell prior to now, past emissions may have delivered energy into the cell; if any of those hypothetical deposits would still be in the bin ring, the listener could walk into a cell that is missing acoustic energy that should be present. This can never occur if the time to enter a new cell is greater than or equal to the bin ring duration.
+
+The minimum distance to enter a previously out-of-window cell, given a window radius of 1 cell, is 1 cell width, or 4 voxels. Given cell size C and listener velocity V, the constraint C / V ≥ 0.512 s gives v_max ≈ 7.81 voxels/s, or 2.93 m/s in-game. This guarantees a listener never enters a cell that should contain audio from past events, but does not because of the window aperture.
+
+To understand how an emitter delivers acoustic energy to a listener window, we need to introduce a fourth core abstraction: a *primary ray*. A primary ray traces the direct path through the audio cell grid from the emitter's cell to the listener window's center cell and tests for occlusions along the way. Rays are implemented as a 3D Amanatides-Woo DDA. If the path is unoccluded, the primary ray delivers its payload into the listener window's cells.
+
+<figure>
+  <video src="/videos/emitter-direct-primary-ray.mp4" controls preload="metadata" playsinline width="100%"></video>
+  <figcaption>A single emitter's direct acoustic energy delivery to a listener window. The red ray is the primary-ray DDA from emitter to centre cell; yellow trails the cells the ray passes through; red fill is the analytic deposit into the listener's 3x3x3 window. Rendered with a small standalone Three.js scene for visualization purposes — not the engine's own renderer.</figcaption>
+</figure>
+
+If the path to the listener window's center is unoccluded, the algorithm assumes that the direct paths to the other 26 cells in the listener window are also unoccluded and computes the acoustic energy delivered into those cells as such. This is done to avoid casting a separate primary ray for each. Under rare circumstances, this can create a scenario where the player can walk into a cell that, if they had been standing there already, would have triggered the occluded primary ray audio path, but because the cell they were standing in prior to entering this one was unoccluded, instead produced cell values as if this cell's direct path from the emitter was not occluded. The trade-off of accepting this slightly incorrect audio synthesis is certainly worth the computation shaved off by avoiding 27 separate DDAs per emission.
+
+The ray carries two payloads: per-band energy, a 3-tuple (low, mid, high) of scalar energy values, one per frequency band, and wave-state metadata including the delay (path length divided by the speed of sound), per-band attenuation, per-band coherence, and the ray's direction.
